@@ -1,10 +1,16 @@
 # =========================================================
-# SMART MONEY INTRADAY SCANNER — Upstox + Streamlit  (v11)
+# SMART MONEY INTRADAY SCANNER — Upstox + Streamlit  (v12)
 # =========================================================
 # Rewritten to actually run on Streamlit, using the real Upstox
 # REST API (OAuth2 login flow + v3 intraday candle API) instead
 # of the undefined `fetch_intraday()` / matplotlib+IPython loop
 # from the previous version.
+#
+# v12 CHANGE: Chart simplified to a single panel showing only
+# Price (candlesticks), VWAP, and EMA9. RSI / MACD / OBV / CVD
+# sub-panels have been removed from the chart (the underlying
+# indicators are still computed and used for the BULLISH /
+# BEARISH signal + summary table, just not plotted).
 #
 # SETUP
 # -----
@@ -32,7 +38,6 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import pytz
 
@@ -66,21 +71,21 @@ C_MUTED, C_BOS, C_BIGC, C_CHOCH = "#9A9590", "#2176AE", "#D4A000", "#7B5EA7"
 
 # NSE trading symbols to scan (subset shown; add/remove freely in the UI)
 STOCKS = [
-    "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES", 
+    "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES",
     "FORCEMOT", "JUBLFOOD", "PNBHOUSING", "IDEA", "BIOCON", "DALBHARAT", "MPHASIS", "NAM-INDIA", "BPCL", "KEI",
-    "TCS", "AMBER", "PREMIERENE", "SIEMENS", "ASTRAL", "SWIGGY", "POLICYBZR", "GLENMARK", "EXIDEIND", 
+    "TCS", "AMBER", "PREMIERENE", "SIEMENS", "ASTRAL", "SWIGGY", "POLICYBZR", "GLENMARK", "EXIDEIND",
     "ADANIENSOL", "HINDPETRO", "DIVISLAB", "AMBUJACEM", "CGPOWER", "PAGEIND", "ADANIGREEN",
-    "POWERINDIA", "BDL", "KPITTECH", "GODREJCP", "NUVAMA", "DABUR", "FORTIS", "LUPIN", 
+    "POWERINDIA", "BDL", "KPITTECH", "GODREJCP", "NUVAMA", "DABUR", "FORTIS", "LUPIN",
     "SOLARINDS", "CROMPTON", "GVT&D", "HEROMOTOCO", "NAUKRI", "INDIANB", "SHREECEM",
-    "PFC", "HINDZINC", "RECLTD", "BSE", "COCHINSHIP", "KFINTECH", "NATIONALUM", "RVNL", "OFSS", 
+    "PFC", "HINDZINC", "RECLTD", "BSE", "COCHINSHIP", "KFINTECH", "NATIONALUM", "RVNL", "OFSS",
     "RADICO", "CHOLAFIN", "JSWENERGY", "SAIL", "WAAREEENER", "THINDIA", "GODFRYPHLP", "SUZLON", "LICHSGFIN",
     "DELHIVERY", "CDSL", "MOTILALOFS", "LODHA", "MANKIND", "MOTHERSON", "NYKAA", "TVSMOTOR", "VBL",
-    "ZYDUSLIFE", "MFSL", "OBEROIRLTY", "PRESTIGE", "PIIND", "GMRAIRPORT", "PGEL", "COFORGE", "MCX", 
+    "ZYDUSLIFE", "MFSL", "OBEROIRLTY", "PRESTIGE", "PIIND", "GMRAIRPORT", "PGEL", "COFORGE", "MCX",
     "SHRIRAMFIN", "VEDL", "INDUSTOWER", "TORNTPHARM", "CUMMINSIND", "GODREJPROP", "HAVELLS", "BOSCHLTD",
-    "NMDC", "ASHOKLEY", "INOXWIND", "RBLBANK", "UNOMINDA", "COLPAL", "BHARATFORG", "PHOENIXLTD", "ABB", 
-    "IREDA", "BANKINDIA", "BLUESTARCO", "SRF", "TATAPOWER", "VOLTAS", "MAZDOCK", "DMART", "SUPREMEIND", "ALKEM", 
-    "SONACOMS", "AUROPHARMA", "BAJAJHLDNG", "HAL", "IRFC", "LAURUSLABS", "MANAPPURAM", "MARICO", "MUTHOOTFIN", "NHPC", 
-    "PERSISTENT", "PETRONET", "PIDILITIND", "SBICARD", "UNITDSPR", "APLAPOLLO", "TATAELXSI", "INDHOTEL", "JINDALSTEL", 
+    "NMDC", "ASHOKLEY", "INOXWIND", "RBLBANK", "UNOMINDA", "COLPAL", "BHARATFORG", "PHOENIXLTD", "ABB",
+    "IREDA", "BANKINDIA", "BLUESTARCO", "SRF", "TATAPOWER", "VOLTAS", "MAZDOCK", "DMART", "SUPREMEIND", "ALKEM",
+    "SONACOMS", "AUROPHARMA", "BAJAJHLDNG", "HAL", "IRFC", "LAURUSLABS", "MANAPPURAM", "MARICO", "MUTHOOTFIN", "NHPC",
+    "PERSISTENT", "PETRONET", "PIDILITIND", "SBICARD", "UNITDSPR", "APLAPOLLO", "TATAELXSI", "INDHOTEL", "JINDALSTEL",
     "UPL", "HYUNDAI", "ABCAPITAL", "BRITANNIA", "GAIL", "CONCOR", "CAMS", "HDFCAMC", "POLYCAB", "OIL", "KALYANKJIL", "ICICIGI"
 ]
 
@@ -415,7 +420,7 @@ def analyze_stock(name, instrument_key, err_rows):
         return None
 
 # =========================================================
-# PLOTLY CHART — 4-panel, one per stock
+# PLOTLY CHART — single panel: Price + VWAP + EMA9
 # =========================================================
 
 def build_chart(r):
@@ -424,44 +429,19 @@ def build_chart(r):
     accent = C_BULL if sig == "BULLISH" else (C_BEAR if sig == "BEARISH" else C_NEUTRAL)
     bg = C_BULL_BG if sig == "BULLISH" else (C_BEAR_BG if sig == "BEARISH" else C_NEUT_BG)
 
-    fig = make_subplots(
-        rows=4, cols=1, shared_xaxes=True,
-        row_heights=[0.5, 0.17, 0.17, 0.16], vertical_spacing=0.03,
-        subplot_titles=("", "RSI", "MACD", "OBV / CVD"),
-    )
+    fig = go.Figure()
 
     fig.add_trace(go.Candlestick(
         x=df["Datetime"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
         increasing_line_color=C_BULL, decreasing_line_color=C_BEAR, name="Price",
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["VWAP"], line=dict(color=C_BOS, width=1.6), name="VWAP"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA9"], line=dict(color=C_BIGC, width=1.2), name="EMA9"), row=1, col=1)
-
-    rsi_col = C_BULL if r["rsi"] > 50 else C_BEAR
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["RSI"], line=dict(color=rsi_col, width=1.2), name="RSI", showlegend=False), row=2, col=1)
-    fig.add_hline(y=70, line=dict(color=C_BEAR, dash="dot", width=1), row=2, col=1)
-    fig.add_hline(y=30, line=dict(color=C_BULL, dash="dot", width=1), row=2, col=1)
-
-    macd_hist = df["MACD"] - df["MACD_Sig"]
-    hist_colors = [C_BULL if v >= 0 else C_BEAR for v in macd_hist]
-    fig.add_trace(go.Bar(x=df["Datetime"], y=macd_hist, marker_color=hist_colors, opacity=0.5, name="Hist", showlegend=False), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["MACD"], line=dict(color=C_BOS, width=1.1), name="MACD", showlegend=False), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["MACD_Sig"], line=dict(color=C_BIGC, width=1.1), name="Signal", showlegend=False), row=3, col=1)
-
-    def norm(s):
-        s = s.values.astype(float)
-        peak = np.nanmax(np.abs(s))
-        return s / peak if np.isfinite(peak) and peak != 0 else np.zeros_like(s)
-
-    obv_col = C_BULL if r["obv_rising"] else C_BEAR
-    cvd_col = C_BULL if r["cvd_bull"] else C_BEAR
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=norm(df["OBV"]), line=dict(color=obv_col, width=1.2), name="OBV", showlegend=False), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=norm(df["CVD"]), line=dict(color=cvd_col, width=1.1, dash="dash"), name="CVD", showlegend=False), row=4, col=1)
+    ))
+    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["VWAP"], line=dict(color=C_BOS, width=1.6), name="VWAP"))
+    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA9"], line=dict(color=C_BIGC, width=1.2), name="EMA9"))
 
     pn = sum(r["checks"].values())
     fig.update_layout(
         title=dict(text=f"{r['name']}   ₹{r['price']:.2f}   {sig} {pn}/5", font=dict(color=accent, size=16)),
-        height=650, margin=dict(l=40, r=20, t=50, b=20),
+        height=450, margin=dict(l=40, r=20, t=50, b=20),
         plot_bgcolor=bg, paper_bgcolor="#FFFFFF",
         xaxis_rangeslider_visible=False, showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
@@ -473,7 +453,7 @@ def build_chart(r):
 # =========================================================
 
 st.title("📡 Smart Money Intraday Scanner")
-st.caption("Live NSE intraday data via Upstox • VWAP / EMA9 / RSI / MACD / ADX • OBV & CVD flow • CHoCH / BOS / Order Blocks")
+st.caption("Live NSE intraday data via Upstox • Price / VWAP / EMA9 • CHoCH / BOS / Order Blocks")
 
 if not ensure_authenticated():
     st.stop()
