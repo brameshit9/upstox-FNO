@@ -1,43 +1,22 @@
 # =========================================================
-# SMART MONEY INTRADAY SCANNER — Upstox + Streamlit  (v12)
+# SMART MONEY INTRADAY SCANNER — Upstox + Streamlit  (v11, CPR removed)
 # =========================================================
-# Rewritten to actually run on Streamlit, using the real Upstox
-# REST API (OAuth2 login flow + v3 intraday candle API) instead
-# of the undefined `fetch_intraday()` / matplotlib+IPython loop
-# from the previous version.
-#
-# v12 CHANGE: Chart simplified to a single panel showing only
-# Price (candlesticks), VWAP, and EMA9. RSI / MACD / OBV / CVD
-# sub-panels have been removed from the chart (the underlying
-# indicators are still computed and used for the BULLISH /
-# BEARISH signal + summary table, just not plotted).
-#
-# SETUP
-# -----
-# 1. Create an app at https://account.upstox.com/developer/apps
-#    - Redirect URI must exactly match what you put in secrets
-#      below (e.g. the URL of your deployed Streamlit app).
-# 2. Put these in Streamlit secrets (.streamlit/secrets.toml
-#    locally, or "Settings -> Secrets" on Streamlit Cloud):
-#
-#       UPSTOX_API_KEY = "your_api_key"
-#       UPSTOX_API_SECRET = "your_api_secret"
-#       UPSTOX_REDIRECT_URI = "https://your-app.streamlit.app"
-#
-# 3. `pip install -r requirements.txt`
-# 4. `streamlit run app.py`
+# Same as v11, with CPR (pivot box) and CPR Volume Profile
+# (POC/VAH/VAL) removed entirely. Chart now shows only:
+# Candles + VWAP + EMA8.
 # =========================================================
 
 import gzip
 import io
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 import pytz
 
@@ -64,14 +43,15 @@ OBV_SLOPE_N = 5
 SMC_IMPULSE = 1.2
 INTRADAY_INTERVAL_MIN = "1"  # 1-minute candles via v3 intraday API
 
-# Colour palette
-C_BULL, C_BEAR, C_NEUTRAL = "#1D9E75", "#D85A30", "#888780"
-C_BULL_BG, C_BEAR_BG, C_NEUT_BG = "#E8F7F1", "#FAECE7", "#F4F3EF"
-C_MUTED, C_BOS, C_BIGC, C_CHOCH = "#9A9590", "#2176AE", "#D4A000", "#7B5EA7"
+# Colour palette — TradingView-style
+C_BULL, C_BEAR, C_NEUTRAL = "#26A69A", "#EF5350", "#888780"
+C_BULL_BG, C_BEAR_BG, C_NEUT_BG = "#FFFFFF", "#FFFFFF", "#FFFFFF"
+C_MUTED, C_BOS, C_BIGC, C_CHOCH = "#9A9590", "#2196F3", "#FF9800", "#7B5EA7"
+C_GRID = "#E6E9EC"
 
 # NSE trading symbols to scan (subset shown; add/remove freely in the UI)
 STOCKS = [
-    "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES",
+        "DIXON", "PATANJALI", "BHEL", "PAYTM", "ADANIPOWER", "M&M", "ANGELONE", "ICICIPRULI", "VMM", "KAYNES",
     "FORCEMOT", "JUBLFOOD", "PNBHOUSING", "IDEA", "BIOCON", "DALBHARAT", "MPHASIS", "NAM-INDIA", "BPCL", "KEI",
     "TCS", "AMBER", "PREMIERENE", "SIEMENS", "ASTRAL", "SWIGGY", "POLICYBZR", "GLENMARK", "EXIDEIND",
     "ADANIENSOL", "HINDPETRO", "DIVISLAB", "AMBUJACEM", "CGPOWER", "PAGEIND", "ADANIGREEN",
@@ -360,7 +340,7 @@ def analyze_stock(name, instrument_key, err_rows):
         has_vol = df["Volume"].sum() > 0
         df = compute_vwap(df) if has_vol else df.assign(VWAP=df["Close"].expanding().mean())
 
-        df["EMA9"] = compute_ema(df["Close"], 9)
+        df["EMA8"] = compute_ema(df["Close"], 8)
         df["RSI"] = compute_rsi(df["Close"], 14)
         df["MACD"], df["MACD_Sig"] = compute_macd(df["Close"])
         df["ADX"], df["ATR_raw"] = compute_adx(df)
@@ -369,7 +349,7 @@ def analyze_stock(name, instrument_key, err_rows):
         df["CVD"] = compute_cvd_proxy(df) if has_vol else pd.Series(0, index=df.index)
 
         last = df.iloc[-1]
-        price, vwap, ema9 = last["Close"], last["VWAP"], last["EMA9"]
+        price, vwap, ema8 = last["Close"], last["VWAP"], last["EMA8"]
         rsi, macd, macd_s = last["RSI"], last["MACD"], last["MACD_Sig"]
         adx, atr = last["ADX"], last["ATR"]
 
@@ -392,11 +372,11 @@ def analyze_stock(name, instrument_key, err_rows):
         volume = 0 if pd.isna(vol_raw) else int(vol_raw)
 
         checks_bull = {
-            "Price > VWAP": price > vwap, "Price > EMA9": price > ema9,
+            "Price > VWAP": price > vwap, "Price > EMA8": price > ema8,
             "RSI > 50": rsi > 50, "MACD > Signal": macd > macd_s, "ADX > 20": adx > 20,
         }
         checks_bear = {
-            "Price < VWAP": price < vwap, "Price < EMA9": price < ema9,
+            "Price < VWAP": price < vwap, "Price < EMA8": price < ema8,
             "RSI < 50": rsi < 50, "MACD < Signal": macd < macd_s, "ADX > 20": adx > 20,
         }
         bull, bear = all(checks_bull.values()), all(checks_bear.values())
@@ -405,7 +385,7 @@ def analyze_stock(name, instrument_key, err_rows):
 
         return dict(
             name=name, instrument_key=instrument_key, signal=signal,
-            price=round(price, 2), vwap=round(vwap, 2), ema9=round(ema9, 2),
+            price=round(price, 2), vwap=round(vwap, 2), ema8=round(ema8, 2),
             rsi=round(rsi, 1), macd=round(macd, 4), macd_sig=round(macd_s, 4),
             adx=round(adx, 1), atr=round(atr, 2),
             obv_rising=obv_rising, cvd_val=int(cvd_val), cvd_bull=cvd_bull, volume=volume,
@@ -420,31 +400,39 @@ def analyze_stock(name, instrument_key, err_rows):
         return None
 
 # =========================================================
-# PLOTLY CHART — single panel: Price + VWAP + EMA9
+# PLOTLY CHART — single price panel: candles, VWAP, EMA8
 # =========================================================
 
 def build_chart(r):
     df = r["df"]
     sig = r["signal"]
     accent = C_BULL if sig == "BULLISH" else (C_BEAR if sig == "BEARISH" else C_NEUTRAL)
-    bg = C_BULL_BG if sig == "BULLISH" else (C_BEAR_BG if sig == "BEARISH" else C_NEUT_BG)
 
     fig = go.Figure()
 
     fig.add_trace(go.Candlestick(
         x=df["Datetime"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        increasing_line_color=C_BULL, decreasing_line_color=C_BEAR, name="Price",
+        increasing=dict(line=dict(color=C_BULL, width=1), fillcolor=C_BULL),
+        decreasing=dict(line=dict(color=C_BEAR, width=1), fillcolor=C_BEAR),
+        whiskerwidth=0.4, name="Price",
     ))
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["VWAP"], line=dict(color=C_BOS, width=1.6), name="VWAP"))
-    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA9"], line=dict(color=C_BIGC, width=1.2), name="EMA9"))
+    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["VWAP"], line=dict(color=C_BOS, width=1.4), name="VWAP"))
+    fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA8"], line=dict(color=C_BIGC, width=1.2), name="EMA8"))
 
     pn = sum(r["checks"].values())
     fig.update_layout(
-        title=dict(text=f"{r['name']}   ₹{r['price']:.2f}   {sig} {pn}/5", font=dict(color=accent, size=16)),
-        height=450, margin=dict(l=40, r=20, t=50, b=20),
-        plot_bgcolor=bg, paper_bgcolor="#FFFFFF",
-        xaxis_rangeslider_visible=False, showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0),
+        title=dict(text=f"{r['name']}   ₹{r['price']:.2f}   {sig} {pn}/5", font=dict(color=accent, size=15)),
+        height=480, margin=dict(l=40, r=20, t=45, b=20),
+        plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
+        font=dict(color="#4A4A4A", size=11),
+        xaxis=dict(rangeslider_visible=False, showgrid=True, gridcolor=C_GRID, gridwidth=1,
+                    showline=False, zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor=C_GRID, gridwidth=1, showline=False, zeroline=False,
+                    side="right"),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left", x=0,
+                     bgcolor="rgba(0,0,0,0)"),
+        hovermode="x unified",
     )
     return fig
 
@@ -453,7 +441,7 @@ def build_chart(r):
 # =========================================================
 
 st.title("📡 Smart Money Intraday Scanner")
-st.caption("Live NSE intraday data via Upstox • Price / VWAP / EMA9 • CHoCH / BOS / Order Blocks")
+st.caption("Live NSE intraday data via Upstox • Chart: VWAP / EMA8 • Table: RSI/MACD/ADX/OBV/CVD/CHoCH/BOS/Order Blocks")
 
 if not ensure_authenticated():
     st.stop()
