@@ -196,6 +196,52 @@ def fetch_intraday(instrument_key: str, interval_min: str = INTRADAY_INTERVAL_MI
         df[col] = pd.to_numeric(df[col], errors="coerce")
     return df, None
 
+
+def fetch_last_session(instrument_key: str, interval_min: str = INTRADAY_INTERVAL_MIN, lookback_days: int = 7):
+    """Fallback for when the market is closed (weekend/holiday/pre-open):
+    pulls candles for the last several calendar days via the historical
+    (non-intraday) endpoint and returns only the most recent trading
+    session found. Returns (df_or_None, session_date_or_None, error_or_None)."""
+    to_date = datetime.now(IST).strftime("%Y-%m-%d")
+    from_date = (datetime.now(IST) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
+    url = f"{UPSTOX_BASE}/v3/historical-candle/{instrument_key}/minutes/{interval_min}/{to_date}/{from_date}"
+    resp = requests.get(url, headers=upstox_headers(), timeout=15)
+    if resp.status_code != 200:
+        return None, None, f"http_{resp.status_code}: {resp.text[:200]}"
+
+    payload = resp.json()
+    candles = payload.get("data", {}).get("candles", [])
+    if not candles:
+        return None, None, "no_candles_in_lookback"
+
+    df = pd.DataFrame(
+        candles, columns=["Datetime", "Open", "High", "Low", "Close", "Volume", "OI"]
+    )
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+    df = df.sort_values("Datetime").reset_index(drop=True)
+    for col in ("Open", "High", "Low", "Close", "Volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    last_date = df["Datetime"].dt.date.max()
+    session_df = df[df["Datetime"].dt.date == last_date].reset_index(drop=True)
+    return session_df, last_date, None
+
+
+def fetch_price_series(instrument_key: str, interval_min: str = INTRADAY_INTERVAL_MIN):
+    """Tries today's live intraday candles first; if the market is closed
+    (empty result), falls back to the last completed session so the
+    scanner keeps working outside trading hours.
+    Returns (df_or_None, is_live, session_date_or_None, error_or_None)."""
+    live_df, live_err = fetch_intraday(instrument_key, interval_min)
+    if live_df is not None and not live_df.empty:
+        return live_df, True, datetime.now(IST).date(), None
+
+    fallback_df, session_date, fb_err = fetch_last_session(instrument_key, interval_min)
+    if fallback_df is not None and not fallback_df.empty:
+        return fallback_df, False, session_date, None
+
+    return None, False, None, fb_err or live_err or "no_candles"
+
 # =========================================================
 # INDICATORS
 # =========================================================
@@ -336,7 +382,7 @@ def detect_order_block(df, atr_series, lb=SWING_LB, impulse_mult=SMC_IMPULSE):
 
 def analyze_stock(name, instrument_key, err_rows):
     try:
-        df, err_note = fetch_intraday(instrument_key)
+        df, is_live, session_date, err_note = fetch_price_series(instrument_key)
         if df is None:
             err_rows.append((name, instrument_key, err_note or "unknown"))
             return None
@@ -392,6 +438,7 @@ def analyze_stock(name, instrument_key, err_rows):
 
         return dict(
             name=name, instrument_key=instrument_key, signal=signal,
+            is_live=is_live, session_date=session_date,
             price=round(price, 2), vwap=round(vwap, 2), ema8=round(ema8, 2),
             rsi=round(rsi, 1), macd=round(macd, 4), macd_sig=round(macd_s, 4),
             adx=round(adx, 1), atr=round(atr, 2),
@@ -427,8 +474,10 @@ def build_chart(r):
     fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA8"], line=dict(color=C_BIGC, width=1.2), name="EMA8"))
 
     pn = sum(r["checks"].values())
+    session_note = "live" if r.get("is_live") else f"last close {r.get('session_date')}"
     fig.update_layout(
-        title=dict(text=f"{r['name']}   ₹{r['price']:.2f}   {sig} {pn}/5", font=dict(color=accent, size=15)),
+        title=dict(text=f"{r['name']}   ₹{r['price']:.2f}   {sig} {pn}/5   ({session_note})",
+                    font=dict(color=accent, size=15)),
         height=480, margin=dict(l=40, r=20, t=45, b=20),
         plot_bgcolor="#FFFFFF", paper_bgcolor="#FFFFFF",
         font=dict(color="#4A4A4A", size=11),
@@ -511,8 +560,15 @@ for r in valid:
         Trend=r["trend"], CHoCH=(r["choch"] or "—"), BOS=(r["bos"] or "—"),
         Score=f"{sum(r['checks'].values())}/5",
         BigCandle=("⚡" if r["big_candle"] else ""),
+        Session=("Live" if r["is_live"] else f"Last close ({r['session_date']})"),
     ))
 st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+
+if any(not r["is_live"] for r in valid):
+    st.info(
+        "⏸️ Market appears closed for one or more symbols — those rows/charts show "
+        "the **last completed session's** candles instead of a live feed."
+    )
 
 # ---- VWAP + EMA8 classification table (independent of the 5-check signal) ----
 # BULLISH -> price > VWAP AND price > EMA8   (Above table)
