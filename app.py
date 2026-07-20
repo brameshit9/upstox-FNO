@@ -4,6 +4,13 @@
 # Same as v11, with CPR (pivot box) and CPR Volume Profile
 # (POC/VAH/VAL) removed entirely. Chart now shows only:
 # Candles + VWAP + EMA8.
+#
+# Added: a VWAP + EMA8 Above/Below classification table
+# (independent of the 5-check RSI/MACD/ADX signal used for
+# the summary table and chart titles):
+#   BULLISH -> price > VWAP AND price > EMA8  (Above table)
+#   BEARISH -> price < VWAP AND price < EMA8  (Below table)
+#   NEUTRAL -> mixed (above one, below the other) -> hidden
 # =========================================================
 
 import gzip
@@ -494,7 +501,7 @@ if not valid:
     st.warning("No data fetched yet. If the market is closed, intraday candles may be empty.")
     st.stop()
 
-# ---- Summary table ----
+# ---- Summary table (5-check RSI/MACD/ADX/VWAP/EMA8 signal) ----
 summary_rows = []
 for r in valid:
     summary_rows.append(dict(
@@ -507,7 +514,50 @@ for r in valid:
     ))
 st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
 
+# ---- VWAP + EMA8 classification table (independent of the 5-check signal) ----
+# BULLISH -> price > VWAP AND price > EMA8   (Above table)
+# BEARISH -> price < VWAP AND price < EMA8   (Below table)
+# NEUTRAL -> mixed (above one, below the other) -> not shown anywhere
+for r in valid:
+    if r["price"] > r["vwap"] and r["price"] > r["ema8"]:
+        r["vwap_ema_status"] = "BULLISH"
+    elif r["price"] < r["vwap"] and r["price"] < r["ema8"]:
+        r["vwap_ema_status"] = "BEARISH"
+    else:
+        r["vwap_ema_status"] = "NEUTRAL"
+
+above_rows = [r for r in valid if r["vwap_ema_status"] == "BULLISH"]
+below_rows = [r for r in valid if r["vwap_ema_status"] == "BEARISH"]
+
+st.divider()
+st.subheader("📐 VWAP + EMA8 Classification")
+st.caption(
+    "BULLISH → price above **both** VWAP and EMA8 (Above table). "
+    "BEARISH → price below **both** VWAP and EMA8 (Below table). "
+    "Mixed signals (above one, below the other) are hidden."
+)
+col_a, col_b = st.columns(2)
+with col_a:
+    st.markdown(f"**🟢 Above VWAP & EMA8 ({len(above_rows)})**")
+    st.dataframe(
+        pd.DataFrame([
+            dict(Stock=r["name"], Price=r["price"], VWAP=r["vwap"], EMA8=r["ema8"])
+            for r in above_rows
+        ]),
+        hide_index=True, use_container_width=True,
+    )
+with col_b:
+    st.markdown(f"**🔴 Below VWAP & EMA8 ({len(below_rows)})**")
+    st.dataframe(
+        pd.DataFrame([
+            dict(Stock=r["name"], Price=r["price"], VWAP=r["vwap"], EMA8=r["ema8"])
+            for r in below_rows
+        ]),
+        hide_index=True, use_container_width=True,
+    )
+
 # ---- Alert callouts ----
+st.divider()
 col1, col2, col3 = st.columns(3)
 with col1:
     big = [r for r in valid if r["big_candle"]]
